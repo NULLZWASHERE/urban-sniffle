@@ -5,44 +5,31 @@ const XERONITE_BASE = 'https://xeronite.wtf';
 
 function loadCookies() {
   try {
-    const filePath = path.join(process.cwd(), 'cookies.txt');
-    const content = fs.readFileSync(filePath, 'utf-8');
-    console.log('✅ Cookies file loaded');
+    const content = fs.readFileSync(path.join(process.cwd(), 'cookies.txt'), 'utf-8');
     const cookies = content
       .split('\n')
-      .filter(line => line.trim() && !line.startsWith('#'))
+      .filter(l => l.trim() && !l.startsWith('#'))
       .map(line => {
-        const parts = line.trim().split('\t');
-        if (parts.length >= 7) return `${parts[5]}=${parts[6]}`;
-        return null;
+        const p = line.split('\t');
+        return p.length >= 7 ? `${p[5]}=${p[6]}` : null;
       })
       .filter(Boolean)
       .join('; ');
     return cookies;
   } catch (e) {
-    console.error('❌ Cookies load failed:', e.message);
     return '';
   }
 }
 
 export default async function handler(req, res) {
-  console.log('📥 Request received:', req.body);
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  const { type, query, wildcard = false } = req.body;
+  if (!type || !query) return res.status(400).json({ error: 'Missing parameters' });
 
   try {
-    const { type, query, wildcard = false } = req.body;
-
-    if (!type || !query) {
-      return res.status(400).json({ error: 'Missing type or query' });
-    }
-
     const cookieHeader = loadCookies();
-    if (!cookieHeader) {
-      return res.status(401).json({ error: 'No cookies in cookies.txt' });
-    }
+    if (!cookieHeader) return res.status(401).json({ error: 'No cookies' });
 
     const headers = {
       'Content-Type': 'application/json',
@@ -50,51 +37,30 @@ export default async function handler(req, res) {
       'Accept': '*/*',
       'Referer': 'https://xeronite.wtf/dashboard/lookup',
       'Cookie': cookieHeader,
+      'sec-ch-ua': '"Chromium";v="129", "Not;A=Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
     };
 
-    console.log('🔑 Using cookies:', cookieHeader.slice(0, 100) + '...');
+    // Small delay to reduce rate limit chance
+    await new Promise(r => setTimeout(r, 800));
 
-    // Snusbase
-    const snusbaseRes = await fetch(`${XERONITE_BASE}/api/snusbase`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ terms: [query], types: [type], wildcard }),
-    });
+    const [snusbaseRes, breachvipRes] = await Promise.all([
+      fetch(`${XERONITE_BASE}/api/snusbase`, { method: 'POST', headers, body: JSON.stringify({ terms: [query], types: [type], wildcard }) }),
+      fetch(`${XERONITE_BASE}/api/breachvip`, { method: 'POST', headers, body: JSON.stringify({ term: query, fields: [type], categories: [], wildcard, case_sensitive: false }) })
+    ]);
 
-    let snusbaseData;
-    if (snusbaseRes.ok) {
-      snusbaseData = await snusbaseRes.json();
-    } else {
-      snusbaseData = { error: `HTTP ${snusbaseRes.status}`, body: await snusbaseRes.text().catch(() => 'No body') };
-    }
-
-    // BreachVIP
-    const breachvipRes = await fetch(`${XERONITE_BASE}/api/breachvip`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ term: query, fields: [type], categories: [], wildcard, case_sensitive: false }),
-    });
-
-    let breachvipData;
-    if (breachvipRes.ok) {
-      breachvipData = await breachvipRes.json();
-    } else {
-      breachvipData = { error: `HTTP ${breachvipRes.status}`, body: await breachvipRes.text().catch(() => 'No body') };
-    }
-
-    const final = {
+    const result = {
       success: true,
       type,
       query,
-      snusbase: snusbaseData,
-      breachvip: breachvipData,
+      snusbase: snusbaseRes.ok ? await snusbaseRes.json() : { error: `HTTP ${snusbaseRes.status}` },
+      breachvip: breachvipRes.ok ? await breachvipRes.json() : { error: `HTTP ${breachvipRes.status}` },
     };
 
-    console.log('✅ Response sent');
-    res.status(200).json(final);
+    res.status(200).json(result);
 
-  } catch (error) {
-    console.error('💥 Server error:', error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 }
