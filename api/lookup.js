@@ -7,6 +7,7 @@ function loadCookies() {
   try {
     const filePath = path.join(process.cwd(), 'cookies.txt');
     const content = fs.readFileSync(filePath, 'utf-8');
+    console.log('✅ Cookies file loaded');
     const cookies = content
       .split('\n')
       .filter(line => line.trim() && !line.startsWith('#'))
@@ -19,20 +20,29 @@ function loadCookies() {
       .join('; ');
     return cookies;
   } catch (e) {
-    console.error('Cookies load error:', e);
+    console.error('❌ Cookies load failed:', e.message);
     return '';
   }
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  console.log('📥 Request received:', req.body);
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
   try {
     const { type, query, wildcard = false } = req.body;
-    if (!type || !query) return res.status(400).json({ error: 'Missing type or query' });
+
+    if (!type || !query) {
+      return res.status(400).json({ error: 'Missing type or query' });
+    }
 
     const cookieHeader = loadCookies();
-    if (!cookieHeader) return res.status(401).json({ error: 'No cookies loaded' });
+    if (!cookieHeader) {
+      return res.status(401).json({ error: 'No cookies in cookies.txt' });
+    }
 
     const headers = {
       'Content-Type': 'application/json',
@@ -40,36 +50,51 @@ export default async function handler(req, res) {
       'Accept': '*/*',
       'Referer': 'https://xeronite.wtf/dashboard/lookup',
       'Cookie': cookieHeader,
-      'sec-fetch-site': 'same-origin',
-      'sec-fetch-mode': 'cors',
     };
 
-    // Try Snusbase
+    console.log('🔑 Using cookies:', cookieHeader.slice(0, 100) + '...');
+
+    // Snusbase
     const snusbaseRes = await fetch(`${XERONITE_BASE}/api/snusbase`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ terms: [query], types: [type], wildcard }),
     });
 
-    // Try BreachVIP
+    let snusbaseData;
+    if (snusbaseRes.ok) {
+      snusbaseData = await snusbaseRes.json();
+    } else {
+      snusbaseData = { error: `HTTP ${snusbaseRes.status}`, body: await snusbaseRes.text().catch(() => 'No body') };
+    }
+
+    // BreachVIP
     const breachvipRes = await fetch(`${XERONITE_BASE}/api/breachvip`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ term: query, fields: [type], categories: [], wildcard, case_sensitive: false }),
     });
 
-    const result = {
+    let breachvipData;
+    if (breachvipRes.ok) {
+      breachvipData = await breachvipRes.json();
+    } else {
+      breachvipData = { error: `HTTP ${breachvipRes.status}`, body: await breachvipRes.text().catch(() => 'No body') };
+    }
+
+    const final = {
       success: true,
       type,
       query,
-      snusbase: snusbaseRes.ok ? await snusbaseRes.json() : { error: 'Failed' },
-      breachvip: breachvipRes.ok ? await breachvipRes.json() : { error: 'Failed' },
+      snusbase: snusbaseData,
+      breachvip: breachvipData,
     };
 
-    res.status(200).json(result);
+    console.log('✅ Response sent');
+    res.status(200).json(final);
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Internal error', message: error.message });
+    console.error('💥 Server error:', error);
+    res.status(500).json({ error: error.message });
   }
 }
